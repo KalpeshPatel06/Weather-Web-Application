@@ -4,11 +4,10 @@ Vercel serverless function handler for FastAPI weather app.
 import os
 import json
 import requests
-from urllib.parse import parse_qs
-from dotenv import load_dotenv
+from http.server import BaseHTTPRequestHandler
 
 # Load environment variables
-load_dotenv()
+api_key = os.environ.get("OPENWEATHER_API_KEY")
 
 
 class WeatherService:
@@ -16,22 +15,14 @@ class WeatherService:
     
     def __init__(self):
         """Initialize the weather service with API configuration."""
-        self.api_key = os.getenv("OPENWEATHER_API_KEY")
+        self.api_key = api_key
         self.base_url = "https://api.openweathermap.org/data/2.5/weather"
         
         if not self.api_key:
             raise ValueError("OPENWEATHER_API_KEY environment variable is not set")
     
-    def get_weather(self, city: str):
-        """
-        Fetch weather data for a given city.
-        
-        Args:
-            city (str): Name of the city to fetch weather for
-            
-        Returns:
-            dict: Weather data or error information
-        """
+    def get_weather(self, city):
+        """Fetch weather data for a given city."""
         if not city or not city.strip():
             return {"error": "City name cannot be empty"}
         
@@ -71,119 +62,90 @@ class WeatherService:
         except requests.exceptions.RequestException as e:
             return {"error": f"Failed to fetch weather data: {str(e)}"}
         except Exception as e:
-            return {"error": "An unexpected error occurred. Please try again later."}
+            return {"error": f"Unexpected error: {str(e)}"}
 
 
 # Initialize weather service
 try:
     weather_service = WeatherService()
-except ValueError as e:
+except Exception as e:
     weather_service = None
-    print(f"Initialization error: {e}")
+    print(f"Failed to initialize weather service: {e}")
 
 
-def handler(request):
-    """
-    Vercel serverless function handler.
+class handler(BaseHTTPRequestHandler):
+    """Vercel serverless function handler."""
     
-    This function handles both GET and POST requests:
-    - GET /api/health: Health check endpoint
-    - POST /api/weather: Weather search endpoint
-    """
-    # Get request method and path
-    method = request.method
-    path = request.path
+    def _set_headers(self, status=200):
+        """Set response headers."""
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
     
-    # CORS headers
-    headers = {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-    }
+    def do_OPTIONS(self):
+        """Handle CORS preflight."""
+        self._set_headers(200)
     
-    # Handle OPTIONS request (CORS preflight)
-    if method == 'OPTIONS':
-        return {
-            'statusCode': 200,
-            'headers': headers,
-            'body': ''
-        }
-    
-    # Health check endpoint
-    if path == '/api/health' or path == '/api':
-        return {
-            'statusCode': 200,
-            'headers': headers,
-            'body': json.dumps({
+    def do_GET(self):
+        """Handle GET requests."""
+        if self.path == '/api/health' or self.path == '/api':
+            self._set_headers(200)
+            response = json.dumps({
                 'status': 'healthy',
-                'service': 'weather-app'
+                'service': 'weather-app',
+                'api_key_set': api_key is not None
             })
-        }
+            self.wfile.write(response.encode())
+        else:
+            self._set_headers(404)
+            response = json.dumps({'error': 'Not found'})
+            self.wfile.write(response.encode())
     
-    # Weather endpoint
-    if path == '/api/weather' and method == 'POST':
-        if not weather_service:
-            return {
-                'statusCode': 500,
-                'headers': headers,
-                'body': json.dumps({
+    def do_POST(self):
+        """Handle POST requests."""
+        if self.path == '/api/weather':
+            if not weather_service:
+                self._set_headers(500)
+                response = json.dumps({
                     'error': 'Weather service not initialized. Check API key configuration.'
                 })
-            }
-        
-        try:
-            # Parse request body
-            body = request.get_json() if hasattr(request, 'get_json') else {}
+                self.wfile.write(response.encode())
+                return
             
-            # Get city from request
-            city = body.get('city', '').strip()
-            
-            if not city:
-                return {
-                    'statusCode': 400,
-                    'headers': headers,
-                    'body': json.dumps({
-                        'error': 'City parameter is required'
-                    })
-                }
-            
-            # Fetch weather data
-            result = weather_service.get_weather(city)
-            
-            if 'error' in result:
-                return {
-                    'statusCode': 400,
-                    'headers': headers,
-                    'body': json.dumps(result)
-                }
-            
-            return {
-                'statusCode': 200,
-                'headers': headers,
-                'body': json.dumps(result)
-            }
-            
-        except Exception as e:
-            return {
-                'statusCode': 500,
-                'headers': headers,
-                'body': json.dumps({
-                    'error': f'Server error: {str(e)}'
-                })
-            }
-    
-    # Default 404 response
-    return {
-        'statusCode': 404,
-        'headers': headers,
-        'body': json.dumps({
-            'error': 'Not found'
-        })
-    }
-
-
-# Vercel requires this specific function signature
-def main(request):
-    """Main entry point for Vercel."""
-    return handler(request)
+            try:
+                # Read request body
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length)
+                data = json.loads(body.decode('utf-8')) if body else {}
+                
+                # Get city from request
+                city = data.get('city', '').strip()
+                
+                if not city:
+                    self._set_headers(400)
+                    response = json.dumps({'error': 'City parameter is required'})
+                    self.wfile.write(response.encode())
+                    return
+                
+                # Fetch weather data
+                result = weather_service.get_weather(city)
+                
+                if 'error' in result:
+                    self._set_headers(400)
+                else:
+                    self._set_headers(200)
+                
+                response = json.dumps(result)
+                self.wfile.write(response.encode())
+                
+            except Exception as e:
+                self._set_headers(500)
+                response = json.dumps({'error': f'Server error: {str(e)}'})
+                self.wfile.write(response.encode())
+        else:
+            self._set_headers(404)
+            response = json.dumps({'error': 'Not found'})
+            self.wfile.write(response.encode())
