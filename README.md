@@ -387,5 +387,3 @@ Your app is working when:
 ---
 
 **Built with Python, JavaScript, and deployed on Vercel** ⚡
-
-Need help? Check Vercel docs or create an issue on GitHub!
